@@ -9,6 +9,33 @@ import (
 )
 
 func main() {
+	// // TEST SCENARIO - memtable sa Record
+	// fmt.Println("=== TESTING MEMTABLE WITH RECORD ===")
+
+	// // Kreiraj memtable
+	// mt := memtable.NewMemTable()
+
+	// // Kreiraj test record-e
+	// record1 := blockmanager.SetRec(0, 1, 0, 4, 6, "key1", []byte("value1"))
+	// record2 := blockmanager.SetRec(0, 2, 0, 4, 6, "key2", []byte("value2"))
+	// record3 := blockmanager.SetRec(0, 3, 0, 4, 6, "key3", []byte("value3"))
+
+	// fmt.Printf("Kreiran record1: Key=%s, Value=%s\n", record1.GetKey(), string(record1.GetValue()))
+	// fmt.Printf("Kreiran record2: Key=%s, Value=%s\n", record2.GetKey(), string(record2.GetValue()))
+	// fmt.Printf("Kreiran record3: Key=%s, Value=%s\n", record3.GetKey(), string(record3.GetValue()))
+
+	// // Dodaj record-e u memtable
+	// fmt.Println("\nDodajem record-e u memtable...")
+	// mt.PutNode(record1)
+	// mt.PutNode(record2)
+	// mt.PutNode(record3)
+
+	// // Flush memtable da vidimo sadržaj
+	// fmt.Println("\nFlush memtable:")
+	// mt.Flush()
+
+	// fmt.Println("\n=== TEST ZAVRŠEN ===")
+
 	manager := NewManager(1024, 1024*5, 5)
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Printf("1. PUT\n")
