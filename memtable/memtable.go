@@ -49,3 +49,16 @@ func (memtable *MemTable) Flush() {
 		currentSkipList.Flush()
 	}
 }
+
+// Find metoda za pronalaženje record-a po ključu
+func (memtable *MemTable) Find(key string) *blockmanager.Record {
+	// Prolazi kroz sve SkipList tabele i traži ključ
+	for i := 0; i < NUMBER_OF_TABLES; i++ {
+		currentSkipList := memtable.tables[i]
+		node := currentSkipList.Find(key)
+		if node != nil {
+			return node.record // Vraćamo record iz Node-a
+		}
+	}
+	return nil // Record nije pronađen
+}
