@@ -115,7 +115,7 @@ func (wal *WAL) WriteRecord(record *blockmanager.Record, blockManager *blockmana
 		return fmt.Errorf("failed to open WAL file: %v", err)
 	}
 	defer file.Close()
-	
+
 	end, err := file.Seek(0, 2)
 	if err != nil {
 		return fmt.Errorf("failed to seek to end of WAL file: %v", err)
@@ -250,7 +250,8 @@ func (wal *WAL) LoadSegments() {
 
 	for _, entry := range entries {
 		if !entry.IsDir() {
-			wal.segmentFilePaths = append(wal.segmentFilePaths, "walFile/WAL/"+entry.Name())
+			filePath := "walFile/WAL/" + entry.Name()
+			wal.segmentFilePaths = append(wal.segmentFilePaths, filePath)
 		}
 	}
 	sort.Strings(wal.segmentFilePaths)
@@ -274,12 +275,28 @@ func (wal *WAL) LoadSegments() {
 	}
 }
 func (wal *WAL) ResetCounter() {
+	if len(wal.segmentFilePaths) == 0 {
+		wal.currentRecordFilePathIndex = 0
+		wal.currentRecordBlockNum = 1
+		wal.currentRecordIndex = 0
+		wal.currentRecordFilePath = ""
+		return
+	}
+
 	wal.currentRecordFilePathIndex = 0
 	wal.currentRecordBlockNum = 1
 	wal.currentRecordIndex = 0
 	wal.currentRecordFilePath = wal.segmentFilePaths[0]
 }
 func (wal *WAL) NextRecord(blockManager *blockmanager.BlockManager) *blockmanager.Record {
+	if len(wal.segmentFilePaths) == 0 {
+		return nil
+	}
+
+	if wal.currentRecordFilePath == "" {
+		return nil
+	}
+
 	tempBlockManager := blockManager //ako je fajl pisan sa drugacijom velicinom bloka
 	header := blockmanager.ReadHeader(wal.currentRecordFilePath)
 	if header != nil {
@@ -298,6 +315,9 @@ func (wal *WAL) NextRecord(blockManager *blockmanager.BlockManager) *blockmanage
 		return nil
 	}
 	if len(block.GetRecords()) == 0 {
+		if wal.currentRecordFilePathIndex >= uint64(len(wal.segmentFilePaths)) {
+			return nil
+		}
 		wal.currentRecordFilePathIndex = 0
 		wal.currentRecordFilePath = wal.segmentFilePaths[wal.currentRecordFilePathIndex]
 		wal.currentRecordBlockNum = 1
@@ -317,14 +337,14 @@ func (wal *WAL) NextRecord(blockManager *blockmanager.BlockManager) *blockmanage
 		wal.currentRecordIndex = 0
 	} else if wal.currentRecordFilePathIndex+1 < uint64(len(wal.segmentFilePaths)) {
 		wal.currentRecordFilePathIndex++
-		wal.currentRecordFilePath = wal.segmentFilePaths[wal.currentRecordFilePathIndex] //nije potreban moze i samo sa indeksom
+		if wal.currentRecordFilePathIndex < uint64(len(wal.segmentFilePaths)) {
+			wal.currentRecordFilePath = wal.segmentFilePaths[wal.currentRecordFilePathIndex] //nije potreban moze i samo sa indeksom
+		}
 		wal.currentRecordBlockNum = 1
 		wal.currentRecordIndex = 0
-	} else if wal.currentRecordFilePathIndex+1 >= uint64(len(wal.segmentFilePaths)) {
-		wal.currentRecordFilePathIndex = 0
-		wal.currentRecordFilePath = wal.segmentFilePaths[wal.currentRecordFilePathIndex]
-		wal.currentRecordBlockNum = 1
-		wal.currentRecordIndex = 0
+	} else {
+
+		return nil
 	}
 
 	return record
