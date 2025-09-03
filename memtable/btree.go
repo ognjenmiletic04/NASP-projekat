@@ -225,3 +225,56 @@ func (b *BTree) findNodeContaining(node *BTreeNode, key string) *BTreeNode {
 
 	return nil
 }
+
+// ReplaceRecord zamenjuje postojeći record novim record-om
+func (b *BTree) ReplaceRecord(key string, newRecord *blockmanager.Record) bool {
+	node := b.findNodeContaining(b.root, key)
+	if node != nil {
+		for i := 0; i < len(node.records); i++ {
+			if node.records[i].GetKey() == key {
+				// Zameni record i označi kao aktivni (ukloni logičko brisanje)
+				node.records[i] = newRecord
+				if i < len(node.isDeleted) {
+					node.isDeleted[i] = false
+				}
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// GetAllRecords vraća sve rekorde iz B-tree u sortiranom redosledu
+func (b *BTree) GetAllRecords() []*blockmanager.Record {
+	var records []*blockmanager.Record
+	if b.root != nil {
+		b.getAllRecordsRecursive(b.root, &records)
+	}
+	return records
+}
+
+func (b *BTree) getAllRecordsRecursive(node *BTreeNode, records *[]*blockmanager.Record) {
+	if node == nil {
+		return
+	}
+
+	// In-order traversal: left children, current records, right children
+	for i := 0; i < len(node.records); i++ {
+		// Process left child
+		if i < len(node.children) {
+			b.getAllRecordsRecursive(node.children[i], records)
+		}
+		// Add current record only if it's not logically deleted
+		if i < len(node.isDeleted) && !node.isDeleted[i] {
+			*records = append(*records, node.records[i])
+		} else if i >= len(node.isDeleted) {
+			// If isDeleted array is shorter, assume record is not deleted
+			*records = append(*records, node.records[i])
+		}
+	}
+
+	// Process rightmost child
+	if len(node.children) > len(node.records) {
+		b.getAllRecordsRecursive(node.children[len(node.records)], records)
+	}
+}
