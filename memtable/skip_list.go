@@ -124,8 +124,8 @@ func (s *SkipList) Insert(record *blockmanager.Record) {
 	s.currentCapacity++
 }
 
-// Funkcija za brisanje cvora iz SkipList
-func (s *SkipList) Delete(key string) {
+// Funkcija za brisanje cvora iz SkipList - optimizovana verzija
+func (s *SkipList) Delete(key string) bool {
 	current := s.head
 	prevNodes := make([]*Node, s.maxHeight)
 	level := s.maxHeight - 1
@@ -145,14 +145,26 @@ func (s *SkipList) Delete(key string) {
 		}
 	}
 
-	// Brisanje cvora sa svih nivoa ako taj cvor postoji
-	if current.next != nil && current.next.record.GetKey() == key {
-		for i := 0; i < s.maxHeight; i++ {
-			if prevNodes[i].next != nil && prevNodes[i].next.record.GetKey() == key {
-				prevNodes[i].next = prevNodes[i].next.next
-			}
+	// Proverava da li čvor postoji
+	if current.next == nil || current.next.record.GetKey() != key {
+		return false // Čvor ne postoji
+	}
+
+	// Brisanje cvora sa svih nivoa
+	deleted := false
+	for i := 0; i < s.maxHeight; i++ {
+		if prevNodes[i] != nil && prevNodes[i].next != nil && prevNodes[i].next.record.GetKey() == key {
+			prevNodes[i].next = prevNodes[i].next.next
+			deleted = true
 		}
 	}
+
+	// Ažurira kapacitet samo ako je stvarno obrisan
+	if deleted {
+		s.currentCapacity--
+	}
+
+	return deleted
 }
 
 // Funkcija za ispisivanje SkipList

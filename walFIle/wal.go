@@ -109,13 +109,17 @@ func (wal *WAL) GetCurrentRecordFilePathIndex() uint64 {
 	return wal.currentRecordFilePathIndex
 }
 
-func (wal *WAL) WriteRecord(record *blockmanager.Record, blockManager *blockmanager.BlockManager) {
+func (wal *WAL) WriteRecord(record *blockmanager.Record, blockManager *blockmanager.BlockManager) error {
 	file, err := os.OpenFile(wal.activeSegmentPath, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
-		panic("File not found")
+		return fmt.Errorf("failed to open WAL file: %v", err)
 	}
 	defer file.Close()
-	end, _ := file.Seek(0, 2)
+	
+	end, err := file.Seek(0, 2)
+	if err != nil {
+		return fmt.Errorf("failed to seek to end of WAL file: %v", err)
+	}
 	lastBlockNumber := (end - blockmanager.HEADER_SIZE) / int64(blockManager.GetBlockSize())
 
 	block := blockManager.ReadBlock(wal.activeSegmentPath, uint64(lastBlockNumber))
@@ -131,9 +135,12 @@ func (wal *WAL) WriteRecord(record *blockmanager.Record, blockManager *blockmana
 	if len(records) == 0 && spaceLeft < record.GetRecordSize() {
 		dividedRecords := record.DivideRecord(blockManager.GetBlockSize())
 		for _, rec := range dividedRecords {
-			wal.WriteRecord(rec, blockManager)
+			err := wal.WriteRecord(rec, blockManager)
+			if err != nil {
+				return fmt.Errorf("failed to write divided record: %v", err)
+			}
 		}
-		return
+		return nil
 	}
 
 	if spaceLeft >= record.GetRecordSize() {
@@ -141,7 +148,7 @@ func (wal *WAL) WriteRecord(record *blockmanager.Record, blockManager *blockmana
 		records = append(records, record)
 		block.SetRecords(records)
 		wal.numberofRecords++
-		return
+		return nil
 	} else if lastBlockNumber+1 <= int64(wal.blockNumber) {
 		block := blockManager.ReadBlock(wal.activeSegmentPath, uint64(lastBlockNumber+1))
 		recordsSizeSum = uint64(0)
@@ -155,61 +162,77 @@ func (wal *WAL) WriteRecord(record *blockmanager.Record, blockManager *blockmana
 		if len(records) == 0 && spaceLeft < record.GetRecordSize() {
 			dividedRecords := record.DivideRecord(blockManager.GetBlockSize())
 			for _, rec := range dividedRecords {
-				wal.WriteRecord(rec, blockManager)
+				err := wal.WriteRecord(rec, blockManager)
+				if err != nil {
+					return fmt.Errorf("failed to write divided record: %v", err)
+				}
 			}
-			return
+			return nil
 		}
 		// records = block.GetRecords()
 		records = append(records, record)
 		block.SetRecords(records)
 		wal.numberofRecords++
-		return
+		return nil
 	} else {
-		wal.CreateSegment(wal.blockManager)
+		err := wal.CreateSegment(wal.blockManager)
+		if err != nil {
+			return fmt.Errorf("failed to create new segment: %v", err)
+		}
 		block := blockManager.ReadBlock(wal.activeSegmentPath, 1)
 		records = block.GetRecords()
 		records = append(records, record)
 		block.SetRecords(records)
 		wal.numberofRecords++
-		return
+		return nil
 	}
 }
 
-func (wal *WAL) CreateSegment(blockManager *blockmanager.BlockManager) {
+func (wal *WAL) CreateSegment(blockManager *blockmanager.BlockManager) error {
 	if len(wal.segmentFilePaths) == 0 {
-		os.MkdirAll("walFile/WAL", 0755)
+		err := os.MkdirAll("walFile/WAL", 0755)
+		if err != nil {
+			return fmt.Errorf("failed to create WAL directory: %v", err)
+		}
 		newName := "walFile/WAL/wal_001.log"
 		file, err := os.Create(newName)
 		if err != nil {
-			panic("File cant be created")
+			return fmt.Errorf("failed to create WAL file: %v", err)
 		}
 		file.Close()
 		wal.activeSegmentPath = newName
 		wal.segmentFilePaths = append(wal.segmentFilePaths, newName)
 		blockmanager.WriteHeader(newName, blockManager.GetBlockSize())
 		wal.ResetCounter()
-		return
+		return nil
 	}
 	lastSegmentName := wal.segmentFilePaths[len(wal.segmentFilePaths)-1]
 	segmentNumberStr := strings.Split(strings.Split(lastSegmentName, "_")[1], ".")[0]
 	segmentNumber, err := strconv.Atoi(segmentNumberStr)
 	if err != nil {
-		panic("Invalid segment number format")
+		return fmt.Errorf("invalid segment number format: %v", err)
 	}
 	newName := fmt.Sprintf("wal_%03d.log", segmentNumber+1)
-	file, _ := os.Create("walFile/WAL/" + newName)
+	file, err := os.Create("walFile/WAL/" + newName)
+	if err != nil {
+		return fmt.Errorf("failed to create new WAL segment: %v", err)
+	}
 	file.Close()
 	wal.activeSegmentPath = "walFile/WAL/" + newName
 	wal.segmentFilePaths = append(wal.segmentFilePaths, "walFile/WAL/"+newName)
 	blockmanager.WriteHeader(wal.activeSegmentPath, blockManager.GetBlockSize())
 	wal.ResetCounter()
+	return nil
 }
 
 func NewWal(blockNum uint64, blockManager *blockmanager.BlockManager) *WAL {
 	wal := &WAL{blockNumber: blockNum, currentRecordIndex: 0, currentRecordBlockNum: 1, currentRecordFilePathIndex: 0, blockManager: blockManager, numberofRecords: 0}
 	wal.LoadSegments()
 	if len(wal.activeSegmentPath) == 0 {
-		wal.CreateSegment(blockManager)
+		err := wal.CreateSegment(blockManager)
+		if err != nil {
+			log.Fatalf("Failed to create initial WAL segment: %v", err)
+		}
 	}
 	wal.currentRecordFilePath = wal.segmentFilePaths[0]
 	return wal
