@@ -1,5 +1,7 @@
 package blockmanager
 
+import "encoding/binary"
+
 type Block struct {
 	records       []*Record
 	blockNumber   uint64
@@ -26,4 +28,11 @@ func (b *Block) SetBlockNumber(num uint64) {
 
 func (b *Block) SetBlockFilePath(path string) {
 	b.blockFilePath = path
+}
+
+func (b *Block) ToBytes() []byte {
+	recBytes := RecordsToByte(b.records)
+	numBuf := make([]byte, 8)
+	binary.LittleEndian.PutUint64(numBuf, b.blockNumber)
+	return append(numBuf, recBytes...)
 }
