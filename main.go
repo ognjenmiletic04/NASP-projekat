@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"project/memtable"
+
+	//"project/sstable"
 	"strings"
 )
 
@@ -152,6 +154,7 @@ func showMemTableContent() {
 	}
 	fmt.Println()
 
-	manager.memtable.Flush()
+	manager.memtable.Dump()
 	fmt.Println("=======================")
+
 }

@@ -3,6 +3,7 @@ package memtable
 import (
 	"fmt"
 	"project/blockmanager"
+	"sort"
 )
 
 type HashMapMemTable struct {
@@ -68,9 +69,7 @@ func (hmt *HashMapMemTable) Find(key string) *blockmanager.Record {
 	return nil
 }
 
-// Flush ce sluziti za praznjenje memtablea u SStable kad on bude implementiran
-// Flush ispisuje sadržaj svih hash mapa
-func (hmt *HashMapMemTable) Flush() {
+func (hmt *HashMapMemTable) Dump() {
 	fmt.Println("=== HashMap MemTable ===")
 
 	activeTableIndex := -1
@@ -105,7 +104,26 @@ func (hmt *HashMapMemTable) Flush() {
 				key, value, record.GetTimeStamp(), tombstone)
 		}
 	}
-} // IsFull proverava da li su SVE hash mape pune (potreban flush)
+}
+
+// Flush sluzi za praznjenje memtablea u SStable kad on bude implementiran
+func (hmt *HashMapMemTable) Flush() ([]*blockmanager.Record, error) {
+	var outputs []*blockmanager.Record
+	for tableIdx := 0; tableIdx < hmt.numTables; tableIdx++ {
+		for _, record := range hmt.tables[tableIdx] {
+			outputs = append(outputs, record)
+		}
+	}
+	// sort tek na kraju, nad celim slice-om
+	sort.Slice(outputs, func(i, j int) bool {
+		return outputs[i].GetKey() < outputs[j].GetKey()
+	})
+
+	hmt.Clear()
+	return outputs, nil
+}
+
+// IsFull proverava da li su SVE hash mape pune (potreban flush)
 func (hmt *HashMapMemTable) IsFull() bool {
 	for i := 0; i < hmt.numTables; i++ {
 		if len(hmt.tables[i]) < hmt.capacity {

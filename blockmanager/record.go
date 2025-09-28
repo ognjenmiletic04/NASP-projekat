@@ -328,6 +328,50 @@ func (record *Record) DivideRecord(blockSize uint64) []*Record {
 }
 
 func RecordPart(wholeRecord *Record, valueSize uint64, valueChunk []byte, part uint16) *Record {
-	record := SetRec(part, wholeRecord.logNum, wholeRecord.tombstone, wholeRecord.keySize, valueSize, wholeRecord.key, valueChunk)
-	return record
+	// record := SetRec(part, wholeRecord.logNum, wholeRecord.tombstone, wholeRecord.keySize, valueSize, wholeRecord.key, valueChunk)
+	r := &Record{}
+	r.timeStamp = wholeRecord.timeStamp
+	r.recordType = part
+	r.logNum = wholeRecord.logNum
+	r.tombstone = wholeRecord.tombstone
+	if len(wholeRecord.key) > 3000000 {
+		log.Fatal("Key size is too big")
+	}
+	r.keySize = wholeRecord.keySize
+	r.valueSize = valueSize
+	r.key = wholeRecord.key
+	r.value = valueChunk
+	r.recordSize = 4 + 8 + 2 + 8 + 8 + 1 + 8 + 8 + r.keySize + r.valueSize
+
+	data := make([]byte, 0)
+	recordSizeByte := make([]byte, 8)
+	binary.LittleEndian.PutUint64(recordSizeByte, r.recordSize)
+
+	recordTypeByte := make([]byte, 2)
+	binary.LittleEndian.PutUint16(recordTypeByte, r.recordType)
+
+	logByte := make([]byte, 8)
+	binary.LittleEndian.PutUint64(logByte, r.logNum)
+
+	tsByte := make([]byte, 8)
+	binary.LittleEndian.PutUint64(tsByte, uint64(r.timeStamp))
+
+	ksByte := make([]byte, 8)
+	binary.LittleEndian.PutUint64(ksByte, uint64(r.keySize))
+
+	vsByte := make([]byte, 8)
+	binary.LittleEndian.PutUint64(vsByte, uint64(r.valueSize))
+
+	data = append(data, recordSizeByte...)
+	data = append(data, recordTypeByte...)
+	data = append(data, logByte...)
+	data = append(data, tsByte...)
+	data = append(data, byte(r.tombstone))
+	data = append(data, ksByte...)
+	data = append(data, vsByte...)
+	data = append(data, []byte(r.key)...)
+	data = append(data, r.value...)
+	r.crcData = CRC32(data)
+
+	return r
 }

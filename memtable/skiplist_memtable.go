@@ -66,10 +66,7 @@ func (smt *SkipListMemTable) Find(key string) *blockmanager.Record {
 	return nil
 }
 
-// Kad se doda SStable flush funkcija ce prazniti memtable u SStable
-// Flush ispisuje sadržaj SkipList tabela
-// Prva nepuna tabela je READ-WRITE (aktivna), ostale su READ-ONLY
-func (smt *SkipListMemTable) Flush() {
+func (smt *SkipListMemTable) Dump() {
 	fmt.Println("=== SkipList MemTable ===")
 
 	// Pronađi aktivnu tabelu
@@ -93,6 +90,35 @@ func (smt *SkipListMemTable) Flush() {
 			currentSkipList.currentCapacity, smt.capacity)
 		currentSkipList.Flush()
 	}
+}
+
+// Flush funkcija prazni memtable u SStable
+// Prva nepuna tabela je READ-WRITE (aktivna), ostale su READ-ONLY
+func (smt *SkipListMemTable) Flush() ([]*blockmanager.Record, error) {
+	var outputs []*blockmanager.Record
+
+	for i := 0; i < smt.numTables; i++ {
+		currentSkipList := smt.tables[i]
+
+		// Idi do dna (level 0)
+		node := currentSkipList.head
+		for node.below != nil {
+			node = node.below
+		}
+
+		// Preskoči head sentinel
+		node = node.next
+
+		// Dodaj sve slogove do tail sentinela
+		for node != nil && node.record != nil {
+			outputs = append(outputs, node.record)
+			node = node.next
+		}
+	}
+
+	// Pošto skip lista već održava redosled po ključu,
+	smt.Clear()
+	return outputs, nil
 }
 
 // IsFull proverava da li su SVE tabele pune (potreban flush)
