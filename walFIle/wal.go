@@ -267,8 +267,11 @@ func (wal *WAL) LoadSegments() {
 	wal.ResetCounter()
 
 	for {
-		rec := wal.NextRecord(wal.blockManager)
-		if rec == nil {
+		rec, hasNext := wal.NextRecord(wal.blockManager)
+		if !hasNext {
+			if rec != nil {
+				wal.numberofRecords++
+			}
 			break
 		}
 		wal.numberofRecords++
@@ -288,13 +291,13 @@ func (wal *WAL) ResetCounter() {
 	wal.currentRecordIndex = 0
 	wal.currentRecordFilePath = wal.segmentFilePaths[0]
 }
-func (wal *WAL) NextRecord(blockManager *blockmanager.BlockManager) *blockmanager.Record {
+func (wal *WAL) NextRecord(blockManager *blockmanager.BlockManager) (*blockmanager.Record, bool) {
 	if len(wal.segmentFilePaths) == 0 {
-		return nil
+		return nil, false
 	}
 
 	if wal.currentRecordFilePath == "" {
-		return nil
+		return nil, false
 	}
 
 	tempBlockManager := blockManager //ako je fajl pisan sa drugacijom velicinom bloka
@@ -312,17 +315,17 @@ func (wal *WAL) NextRecord(blockManager *blockmanager.BlockManager) *blockmanage
 	}
 	block := tempBlockManager.ReadBlock(wal.currentRecordFilePath, wal.currentRecordBlockNum)
 	if block == nil {
-		return nil
+		return nil, false
 	}
 	if len(block.GetRecords()) == 0 {
 		if wal.currentRecordFilePathIndex >= uint64(len(wal.segmentFilePaths)) {
-			return nil
+			return nil, false
 		}
 		wal.currentRecordFilePathIndex = 0
 		wal.currentRecordFilePath = wal.segmentFilePaths[wal.currentRecordFilePathIndex]
 		wal.currentRecordBlockNum = 1
 		wal.currentRecordIndex = 0
-		return nil
+		return nil, false
 	}
 	record := block.GetRecords()[wal.currentRecordIndex]
 
@@ -344,10 +347,10 @@ func (wal *WAL) NextRecord(blockManager *blockmanager.BlockManager) *blockmanage
 		wal.currentRecordIndex = 0
 	} else {
 
-		return nil
+		return record, false
 	}
 
-	return record
+	return record, true
 
 }
 

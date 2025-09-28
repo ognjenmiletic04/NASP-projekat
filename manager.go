@@ -48,10 +48,7 @@ func loadFromWAL(mt memtable.MemTableInterface, wal *wal.WAL) {
 
 	totalRecords := 0
 	for {
-		record := wal.NextRecord(wal.GetBlockManager())
-		if record == nil {
-			break // Nema više zapisa
-		}
+		record, hasNext := wal.NextRecord(wal.GetBlockManager())
 
 		totalRecords++
 		key := record.GetKey()
@@ -60,6 +57,9 @@ func loadFromWAL(mt memtable.MemTableInterface, wal *wal.WAL) {
 		existingRecord, exists := keyMap[key]
 		if !exists || record.GetTimeStamp() > existingRecord.GetTimeStamp() {
 			keyMap[key] = record
+		}
+		if !hasNext {
+			break // Nema više zapisa
 		}
 	}
 
@@ -110,8 +110,8 @@ func (manager *Manager) GET(key string) []byte {
 
 	// Pronađi poslednju verziju ključa u WAL-u
 	for {
-		record := manager.wal.NextRecord(manager.blockManager)
-		if record == nil {
+		record, hasNext := manager.wal.NextRecord(manager.blockManager)
+		if !hasNext {
 			break
 		}
 		if record.GetKey() == key {
