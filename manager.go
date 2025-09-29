@@ -274,6 +274,7 @@ func (manager *Manager) DELETE(key string) error {
 
 	// TEK NAKON uspešnog WAL zapisa: Dodaj delete marker u memtable
 	manager.memtable.PutRecord(record)
+	manager.cache.Put(record)
 
 	manager.blockManager.EmptyBufferPool() //samo za testiranje inace se prazni sam kad se popuni
 	fmt.Println("Data deleted successfully")
