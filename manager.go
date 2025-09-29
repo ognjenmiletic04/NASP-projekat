@@ -16,16 +16,31 @@ import (
 	wal "project/walFile"
 )
 
+type FileManager struct {
+	sstableID int
+}
+
+func NewFileManager() *FileManager {
+	return &FileManager{
+		sstableID: 1,
+	}
+}
+
+func (m *FileManager) nextFileName(base, suffix string) string {
+	return fmt.Sprintf("sstable/%s/usertable-%05d-%s.db", base, m.sstableID, suffix)
+}
+
 type Manager struct {
 	blockManager *blockmanager.BlockManager
 	wal          *wal.WAL
-	memtable     memtable.MemTableInterface // Koristi interface umesto konkretni tip
+	memtable     memtable.MemTableInterface
 	cache        *cache.Cache
-	data         *sstable.Data // dodaj referencu na Data
+	data         *sstable.Data
 	index        *sstable.Index
 	summary      *sstable.Summary
 	filter       *sstable.BloomFilter
 	mtree        *sstable.MerkleTree
+	mfile        *FileManager
 }
 
 var conf *Config
@@ -38,25 +53,23 @@ func init() {
 	}
 }
 
-//funckija za imena file da ne ide sve uvek u 1.
-
 func NewManager(memTableType memtable.MemTableType) *Manager {
 
 	bufferPool := blockmanager.NewBufferPool()
 	blockManager := blockmanager.NewBlockManager(bufferPool, conf.BlockSize, conf.PoolSize)
-	wal := wal.NewWal(conf.BlockNum, blockManager)
-
+	wal := wal.NewWal(5, blockManager)
+	mf := NewFileManager()
 	// Kreiraj memtable sa izabranim tipom
 	mt := memtable.CreateMemTable(memTableType, conf.MemCapacity)
 	loadFromWAL(mt, wal)
 
 	ch := cache.NewCache(conf.CacheCapacity)
 
-	dt := sstable.NewData("sstable/DATA/usertable-00001-Data.db", conf.BlockSize, conf.PoolSize)
-	idx := sstable.NewIndex("sstable/INDEX/usertable-00001-Index.db", nil) // za početak prazan
-	expectedElements := memtable.DEFAULT_CAPACITY_PER_TABLE * memtable.DEFAULT_NUMBER_OF_TABLES
+	dt := sstable.NewData(mf.nextFileName("DATA", "Data"), conf.BlockSize, conf.PoolSize)
+	idx := sstable.NewIndex(mf.nextFileName("INDEX", "Index"), nil) // za početak prazan
+	expectedElements := conf.MemCapacity * memtable.DEFAULT_NUMBER_OF_TABLES
 	bf := sstable.NewBloomFilter(expectedElements, 0.01)
-	s := sstable.NewSummary("sstable/SUMMARY/usertable-00001-Summary.db")
+	s := sstable.NewSummary(mf.nextFileName("SUMMARY", "Summary"))
 	return &Manager{
 		blockManager: blockManager,
 		wal:          wal,
@@ -67,6 +80,7 @@ func NewManager(memTableType memtable.MemTableType) *Manager {
 		summary:      s,
 		filter:       bf,
 		mtree:        nil,
+		mfile:        mf,
 	}
 }
 
@@ -129,17 +143,18 @@ func (manager *Manager) PUT(key string, value []byte) error {
 			if err != nil {
 				return fmt.Errorf("failed to flush memtable to SSTable: %v", err)
 			}
+
 			manager.index.SetIndexEntries(indexEntries)
 			if err := manager.index.WriteToFile(); err != nil {
 				return fmt.Errorf("\nfailed to write index: %v", err)
 			}
 
 			// ovde napraviti i summary
-			summaryFile := "sstable/SUMMARY/usertable-00001-Summary.db"
+
 			smr, err := sstable.BuildSummaryFromIndex(
-				manager.index.GetFileName(), // uzmi index fajl koji si upravo napravio
-				summaryFile,                 // gde da snimi summary
-				conf.SummaryStep,            // N = svaki 5. entry ide u summary (podesi po želji)
+				manager.index.GetFileName(),   // uzmi index fajl koji si upravo napravio
+				manager.summary.GetFileName(), // gde da snimi summary
+				conf.SummaryStep,              // N = svaki 5. entry ide u summary (podesi po želji)
 			)
 			if err != nil {
 				return fmt.Errorf("failed to build summary: %v", err)
@@ -150,7 +165,7 @@ func (manager *Manager) PUT(key string, value []byte) error {
 			}
 
 			//upis bloomfiltera
-			bfFile, err := os.Create("sstable/FILTER/usertable-00001-Filter.db")
+			bfFile, err := os.Create(manager.mfile.nextFileName("FILTER", "Filter"))
 			if err != nil {
 				return fmt.Errorf("failed to create bloom filter file: %v", err)
 			}
@@ -162,11 +177,12 @@ func (manager *Manager) PUT(key string, value []byte) error {
 			}
 
 			manager.mtree = sstable.CreateMerkleTree(manager.data.GetDataBlocks(memtable.DEFAULT_NUMBER_OF_TABLES, manager.data.GetFileName()))
-			manager.mtree.Serialize("sstable/METADATA/usertable-00001-Metadata.db")
+			manager.mtree.Serialize(manager.mfile.nextFileName("METADATA", "Metadata"))
 
 			fmt.Println("MemTable flushed to SSTable")
 		}
 	}
+	manager.mfile.sstableID += 1
 
 	manager.blockManager.EmptyBufferPool() //samo za testiranje inace se prazni sam kad se popuni
 	fmt.Println("Data written successfully")
@@ -200,20 +216,14 @@ func (manager *Manager) GET(key string) []byte {
 	}
 
 	//Trece: Trazi u BloomFilter
-	file, _ := os.Open("sstable/FILTER/usertable-00001-Filter.db")
+	file, _ := os.Open(manager.mfile.nextFileName("FILTER", "Filter"))
 	manager.filter.ReadBloomFilterFile(file)
 	if manager.filter.Contains([]byte(key)) {
 		//Ako je mozda u BF, idemo dalje
 
-		// Četvrto - summary sstabla-a
-		/*entries, err := sstable.ReadFromFile("sstable/SUMMARY/usertable-00001-Summary.db")
-		if err != nil {
-			fmt.Printf("Greska pri citanju summary fajla: %v\n", err)
-			return nil
-		}*/
+		cand, _ := manager.summary.Find([]byte(key))
 
-		_, found := manager.summary.Find([]byte(key))
-		if !found {
+		if cand == -1 {
 			// Nije u summary → ne postoji
 			return nil
 		} else {
@@ -224,18 +234,17 @@ func (manager *Manager) GET(key string) []byte {
 				return nil
 			} else {
 				//Trazi u index
-
-				indexCandidateOffset, found1 := manager.index.SearchIndex([]byte(key))
-				if !found1 {
+				indexCandidateOffset, _ := manager.index.SearchIndex([]byte(key))
+				if indexCandidateOffset == uint32(0xFFFFFFFF) {
 					return nil
 				} else {
 					//ako ga mozda ima u index, trazi u data block iz sstable data
-					record, found2, err := manager.data.FindInBlock(indexCandidateOffset, []byte(key))
+					record, _, err := manager.data.FindInBlock(indexCandidateOffset, []byte(key))
 					if err != nil {
 						fmt.Printf("Greska pri citanju summary fajla: %v\n", err)
 						return nil
 					} else {
-						if !found2 {
+						if record == nil {
 							return nil
 						} else {
 							manager.cache.Put(record)
@@ -248,7 +257,6 @@ func (manager *Manager) GET(key string) []byte {
 		}
 
 	} else {
-		//Sigurno se ne nalazi u BloomFilteru
 		return nil
 	}
 

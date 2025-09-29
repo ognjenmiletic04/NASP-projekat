@@ -8,7 +8,6 @@ import (
 type Config struct {
 	BlockSize     uint64 `json:"blockSize"`
 	PoolSize      uint64 `json:"poolSize"`
-	BlockNum      uint64 `json:"blockNum"`
 	MemCapacity   int    `json:"memCapacity"`
 	SummaryStep   int    `json:"summaryStep"`
 	CacheCapacity int    `json:"cacheCapacity"`
@@ -24,7 +23,6 @@ func LoadConfig(path string) (*Config, error) {
 	cfg := &Config{
 		BlockSize:     4096, // 4KB
 		PoolSize:      512,
-		BlockNum:      5,
 		MemCapacity:   3,
 		SummaryStep:   5,
 		CacheCapacity: 5,
@@ -41,9 +39,6 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.PoolSize <= 0 {
 		cfg.PoolSize = 512
-	}
-	if cfg.BlockNum <= 0 {
-		cfg.BlockNum = 5
 	}
 	if cfg.MemCapacity <= 0 {
 		cfg.MemCapacity = 1000

@@ -58,7 +58,7 @@ func (idx *Index) WriteToFile() error {
 	for _, entry := range idx.indexEntries {
 		// 1) key size
 		ks := uint64(len(entry.Key))
-		ksBytes := make([]byte, 8)
+		ksBytes := make([]byte, 8) //key je sigurno veci
 		binary.LittleEndian.PutUint64(ksBytes, ks)
 		if _, err := f.Write(ksBytes); err != nil {
 			return err

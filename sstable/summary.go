@@ -129,7 +129,7 @@ func BuildSummaryFromIndex(indexFile string, summaryFile string, N int) (*Summar
 	var entryCount int = 0
 
 	for {
-		// 1) key size
+		// 1) key size -- ovo make i 8 key je sigurno veci?
 		ksBytes := make([]byte, 8)
 		n, err := f.Read(ksBytes)
 		if err != nil || n == 0 {

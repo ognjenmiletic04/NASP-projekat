@@ -1,8 +1,8 @@
 {
-  "blockSize": 4096,
+  "blockSize": 1024,
   "poolSize": 512,
-  "blockNum": 5,
-  "memCapacity": 3,
+  "memCapacity": 4,
   "cacheCapacity":5,
-  "summaryStep": 5
+  "summaryStep": 2
 }
+

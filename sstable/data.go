@@ -2,6 +2,7 @@ package sstable
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"project/blockmanager"
 )
@@ -95,8 +96,9 @@ func (d *Data) WriteDataFile(records []*blockmanager.Record) (indexEntries []Ind
 			}
 			curRecords = append(curRecords, rec)
 			curBlockBytes += rSize
+			//indexEntries = append(indexEntries, IndexEntry{Key: firstKeyInBlock, Offset: currentBlockNum})
 			continue
-		} //indexEntries = append(indexEntries, IndexEntry{Key: firstKeyInBlock, Offset: currentBlockNum})?
+		}
 
 		// 2. Ako staje u prazan blok (zatvori trenutni i otvori novi)
 		if rSize <= d.blockSize {
@@ -205,4 +207,53 @@ func (d *Data) GetDataBlocks(numberOfBlocks uint64, filename string) []*blockman
 		blocks = append(blocks, d.blockManager.ReadBlock(filename, uint64(i)))
 	}
 	return blocks
+}
+
+func (d *Data) ReadAllDataBlocks() ([][]*blockmanager.Record, error) {
+	f, err := os.Open(d.fileName)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	// preskoči header
+	_, err = f.Seek(int64(blockmanager.HEADER_SIZE), io.SeekStart)
+	if err != nil {
+		return nil, fmt.Errorf("failed to seek header: %v", err)
+	}
+
+	var allBlocks [][]*blockmanager.Record
+
+	buf := make([]byte, d.blockSize)
+	blockNum := 1
+
+	for {
+		n, err := f.Read(buf)
+		if err == io.EOF {
+			break // kraj fajla
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed reading block %d: %v", blockNum, err)
+		}
+		if n == 0 {
+			break
+		}
+
+		// deserijalizuj sve rekorde iz ovog bloka
+		records := make([]*blockmanager.Record, 0)
+		i := 0
+		for i < n {
+			rec, errCode := blockmanager.Deserialize(buf[i:])
+			if errCode != 0 || rec == nil {
+				break
+			}
+			records = append(records, rec)
+			i += int(rec.GetRecordSize())
+		}
+
+		allBlocks = append(allBlocks, records)
+		blockNum++
+	}
+
+	return allBlocks, nil
 }
