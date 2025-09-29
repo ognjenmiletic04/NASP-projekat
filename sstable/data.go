@@ -2,22 +2,15 @@ package sstable
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"project/blockmanager"
 )
 
-// KV predstavlja sortirani key/value iz MemTable-a
-type KV struct {
-	Key       []byte
-	Value     []byte
-	Tombstone bool
-}
-
 // IndexEntry predstavlja sparse index entry (prvi key u data bloku)
 type IndexEntry struct {
-	Key       []byte
-	DataBlock uint32 // broj bloka u data fajlu (blok 0 = header)
-	Offset    uint32 // offset unutar bloka (ovde koristimo 0 za pocetak bloka)
+	Key    []byte
+	Offset uint32 // offset unutar bloka (ovde koristimo 0 za pocetak bloka)
 }
 
 // Data predstavlja glavni segment SSTable fajla
@@ -29,12 +22,16 @@ type Data struct {
 }
 
 // Konstruktor
-func NewData(fileName string, blockSize uint64) *Data {
+func NewData(fileName string, blockSize uint64, poolSize uint64) *Data {
 	return &Data{
-		fileName:     fileName,
-		blockSize:    blockSize,
-		blockManager: blockmanager.NewBlockManager(blockmanager.NewBufferPool(), blockSize, 512),
-		numRecords:   0,
+		fileName:  fileName,
+		blockSize: blockSize,
+		blockManager: blockmanager.NewBlockManager(
+			blockmanager.NewBufferPool(),
+			blockSize,
+			poolSize,
+		),
+		numRecords: 0,
 	}
 }
 
@@ -67,13 +64,16 @@ func (d *Data) SetNumRecords(n uint64) {
 	d.numRecords = n
 }
 
-// WriteDataFile upisuje sortedKv u dataFile koristeci blockSize.
-// Vraca slice IndexEntry — po jedan entry za svaki napunjen data blok (prvi key u bloku).
-func (d *Data) WriteDataFile(sortedKv []KV) (indexEntries []IndexEntry, err error) {
-	// napisi header (blok 0)
+// WriteDataFile upisuje sve rekorde iz memtable u .data fajl koristeći BlockManager.
+// Na kraj fajla dopisuje i Index blok.
+func (d *Data) WriteDataFile(records []*blockmanager.Record) (indexEntries []IndexEntry, err error) {
+
+	os.Create(d.fileName)
+
+	// upiši header
 	blockmanager.WriteHeader(d.fileName, d.blockSize)
 
-	if len(sortedKv) == 0 {
+	if len(records) == 0 {
 		return nil, nil
 	}
 
@@ -84,35 +84,52 @@ func (d *Data) WriteDataFile(sortedKv []KV) (indexEntries []IndexEntry, err erro
 		firstKeyInBlock []byte
 	)
 
-	for _, kv := range sortedKv {
-		var tbstn uint8 = 0
-		if kv.Tombstone {
-			tbstn = 1
+	for _, rec := range records {
+		ser := blockmanager.Serialize(rec)
+		rSize := uint64(len(ser))
+		d.numRecords++ // broj logičkih rekorda
+
+		// 1. Ako staje u trenutni blok
+		if curBlockBytes+rSize <= d.blockSize {
+			if len(curRecords) == 0 {
+				firstKeyInBlock = []byte(rec.GetKey())
+			}
+			curRecords = append(curRecords, rec)
+			curBlockBytes += rSize
+			//indexEntries = append(indexEntries, IndexEntry{Key: firstKeyInBlock, Offset: currentBlockNum})
+			continue
 		}
 
-		// kreiramo osnovni record
-		rec := blockmanager.SetRec(1, 0, tbstn, uint64(len(kv.Key)), uint64(len(kv.Value)), string(kv.Key), kv.Value)
-
-		// podelimo record na fragmente koji staju u blok
-		recParts := rec.DivideRecord(d.blockSize)
-
-		for _, r := range recParts {
-			ser := blockmanager.Serialize(r)
-			rSize := uint64(len(ser))
-
-			if curBlockBytes+rSize > d.blockSize {
-				if len(curRecords) == 0 {
-					return nil, fmt.Errorf("a single record fragment is larger than blockSize (key=%s)", string(kv.Key))
-				}
-
+		// 2. Ako staje u prazan blok (zatvori trenutni i otvori novi)
+		if rSize <= d.blockSize {
+			if len(curRecords) > 0 {
+				// upiši trenutni blok
 				d.blockManager.WriteBlock(curRecords, d.fileName, uint64(currentBlockNum))
+				indexEntries = append(indexEntries, IndexEntry{Key: firstKeyInBlock, Offset: currentBlockNum})
+				currentBlockNum++
+			}
 
-				indexEntries = append(indexEntries, IndexEntry{
-					Key:       append([]byte(nil), firstKeyInBlock...),
-					DataBlock: currentBlockNum,
-					Offset:    0,
-				})
+			// novi blok
+			curRecords = []*blockmanager.Record{rec}
+			curBlockBytes = rSize
+			firstKeyInBlock = []byte(rec.GetKey())
+			continue
+		}
 
+		// 3. Ako je rekord veći od blockSize → podeli ga
+		recParts := rec.DivideRecord(d.blockSize)
+		for _, r := range recParts {
+			serPart := blockmanager.Serialize(r)
+			partSize := uint64(len(serPart))
+
+			if partSize > d.blockSize {
+				return nil, fmt.Errorf("fragment i dalje veći od blockSize (key=%s)", r.GetKey())
+			}
+
+			if curBlockBytes+partSize > d.blockSize {
+				// zatvori trenutni blok
+				d.blockManager.WriteBlock(curRecords, d.fileName, uint64(currentBlockNum))
+				indexEntries = append(indexEntries, IndexEntry{Key: firstKeyInBlock, Offset: currentBlockNum})
 				currentBlockNum++
 				curRecords = curRecords[:0]
 				curBlockBytes = 0
@@ -120,28 +137,24 @@ func (d *Data) WriteDataFile(sortedKv []KV) (indexEntries []IndexEntry, err erro
 			}
 
 			if len(curRecords) == 0 {
-				firstKeyInBlock = append([]byte(nil), kv.Key...)
+				firstKeyInBlock = []byte(r.GetKey())
 			}
-
 			curRecords = append(curRecords, r)
-			curBlockBytes += rSize
-			d.numRecords++
+			curBlockBytes += partSize
 		}
 	}
 
+	// upiši poslednji data blok
 	if len(curRecords) > 0 {
 		d.blockManager.WriteBlock(curRecords, d.fileName, uint64(currentBlockNum))
-		indexEntries = append(indexEntries, IndexEntry{
-			Key:       append([]byte(nil), firstKeyInBlock...),
-			DataBlock: currentBlockNum,
-			Offset:    0,
-		})
+		indexEntries = append(indexEntries, IndexEntry{Key: firstKeyInBlock, Offset: currentBlockNum})
+		currentBlockNum++
 	}
 
 	return indexEntries, nil
 }
 
-// ReadBlock ucitava ceo blok iz .data fajla
+// ReadDataFile učitava ceo blok iz .data fajla
 func (d *Data) ReadDataFile(blockNum uint32) ([]*blockmanager.Record, error) {
 	f, err := os.Open(d.fileName)
 	if err != nil {
@@ -149,7 +162,7 @@ func (d *Data) ReadDataFile(blockNum uint32) ([]*blockmanager.Record, error) {
 	}
 	defer f.Close()
 
-	// izracunaj offset bloka u fajlu (preskoci header)
+	// izračunaj offset bloka u fajlu (preskoči header)
 	offset := int64(blockNum-1)*int64(d.blockSize) + int64(blockmanager.HEADER_SIZE)
 	buf := make([]byte, d.blockSize)
 
@@ -173,7 +186,7 @@ func (d *Data) ReadDataFile(blockNum uint32) ([]*blockmanager.Record, error) {
 	return records, nil
 }
 
-// FindInBlock pretrazuje kljuc unutar datog bloka
+// FindInBlock pretražuje ključ unutar datog bloka -- ne target nego key
 func (d *Data) FindInBlock(blockNum uint32, target []byte) (*blockmanager.Record, bool, error) {
 	records, err := d.ReadDataFile(blockNum)
 	if err != nil {
@@ -186,4 +199,61 @@ func (d *Data) FindInBlock(blockNum uint32, target []byte) (*blockmanager.Record
 		}
 	}
 	return nil, false, nil
+}
+
+func (d *Data) GetDataBlocks(numberOfBlocks uint64, filename string) []*blockmanager.Block {
+	blocks := make([]*blockmanager.Block, 0)
+	for i := 1; i < int(numberOfBlocks); i++ {
+		blocks = append(blocks, d.blockManager.ReadBlock(filename, uint64(i)))
+	}
+	return blocks
+}
+
+func (d *Data) ReadAllDataBlocks() ([][]*blockmanager.Record, error) {
+	f, err := os.Open(d.fileName)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	// preskoči header
+	_, err = f.Seek(int64(blockmanager.HEADER_SIZE), io.SeekStart)
+	if err != nil {
+		return nil, fmt.Errorf("failed to seek header: %v", err)
+	}
+
+	var allBlocks [][]*blockmanager.Record
+
+	buf := make([]byte, d.blockSize)
+	blockNum := 1
+
+	for {
+		n, err := f.Read(buf)
+		if err == io.EOF {
+			break // kraj fajla
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed reading block %d: %v", blockNum, err)
+		}
+		if n == 0 {
+			break
+		}
+
+		// deserijalizuj sve rekorde iz ovog bloka
+		records := make([]*blockmanager.Record, 0)
+		i := 0
+		for i < n {
+			rec, errCode := blockmanager.Deserialize(buf[i:])
+			if errCode != 0 || rec == nil {
+				break
+			}
+			records = append(records, rec)
+			i += int(rec.GetRecordSize())
+		}
+
+		allBlocks = append(allBlocks, records)
+		blockNum++
+	}
+
+	return allBlocks, nil
 }

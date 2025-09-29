@@ -267,8 +267,11 @@ func (wal *WAL) LoadSegments() {
 	wal.ResetCounter()
 
 	for {
-		rec := wal.NextRecord(wal.blockManager)
-		if rec == nil {
+		rec, hasNext := wal.NextRecord(wal.blockManager)
+		if !hasNext {
+			if rec != nil {
+				wal.numberofRecords++
+			}
 			break
 		}
 		wal.numberofRecords++
@@ -288,13 +291,13 @@ func (wal *WAL) ResetCounter() {
 	wal.currentRecordIndex = 0
 	wal.currentRecordFilePath = wal.segmentFilePaths[0]
 }
-func (wal *WAL) NextRecord(blockManager *blockmanager.BlockManager) *blockmanager.Record {
+func (wal *WAL) NextRecord(blockManager *blockmanager.BlockManager) (*blockmanager.Record, bool) {
 	if len(wal.segmentFilePaths) == 0 {
-		return nil
+		return nil, false
 	}
 
 	if wal.currentRecordFilePath == "" {
-		return nil
+		return nil, false
 	}
 
 	tempBlockManager := blockManager //ako je fajl pisan sa drugacijom velicinom bloka
@@ -312,17 +315,17 @@ func (wal *WAL) NextRecord(blockManager *blockmanager.BlockManager) *blockmanage
 	}
 	block := tempBlockManager.ReadBlock(wal.currentRecordFilePath, wal.currentRecordBlockNum)
 	if block == nil {
-		return nil
+		return nil, false
 	}
 	if len(block.GetRecords()) == 0 {
 		if wal.currentRecordFilePathIndex >= uint64(len(wal.segmentFilePaths)) {
-			return nil
+			return nil, false
 		}
 		wal.currentRecordFilePathIndex = 0
 		wal.currentRecordFilePath = wal.segmentFilePaths[wal.currentRecordFilePathIndex]
 		wal.currentRecordBlockNum = 1
 		wal.currentRecordIndex = 0
-		return nil
+		return nil, false
 	}
 	record := block.GetRecords()[wal.currentRecordIndex]
 
@@ -344,10 +347,10 @@ func (wal *WAL) NextRecord(blockManager *blockmanager.BlockManager) *blockmanage
 		wal.currentRecordIndex = 0
 	} else {
 
-		return nil
+		return record, false
 	}
 
-	return record
+	return record, true
 
 }
 
@@ -384,8 +387,46 @@ func (wal *WAL) ConnectDividedRecord(firstPart *blockmanager.Record, currentBloc
 		}
 
 	}
-	return blockmanager.SetRec(0, firstPart.GetLogNum(), firstPart.GetTombstone(), firstPart.GetKeySize(), uint64(len(value)), firstPart.GetKey(), value)
-	//lognum se ovde ne moze bas odrediti ako ima 17 delova ima 17 razlicitih brojeva, stavio sam broj prvog loga mada nije ni bitno
+	//return blockmanager.SetRec(0, firstPart.GetLogNum(), firstPart.GetTombstone(), firstPart.GetKeySize(), uint64(len(value)), firstPart.GetKey(), value)
+	// Rekonstruišemo finalni FULL record (recordType = 0) bez menjanja originalnog timestamp-a
+	// NE koristimo SetRec jer bi on kreirao novi timestamp i time narušio redosled verzija pri replay-u WAL-a
+	r := &blockmanager.Record{}
+	r.SetTimeStamp(firstPart.GetTimeStamp())
+	r.SetRecordType(0)
+	r.SetLogNum(firstPart.GetLogNum())
+	r.SetTombstone(firstPart.GetTombstone())
+	r.SetKeySize(firstPart.GetKeySize())
+	r.SetValueSize(uint64(len(value)))
+	r.SetKey(firstPart.GetKey())
+	r.SetValue(value)
+	r.SetRecordSize(4 + 8 + 2 + 8 + 8 + 1 + 8 + 8 + r.GetKeySize() + r.GetValueSize())
+
+	// Izračun CRC (isti način kao u SetRec / RecordPart)
+	data := make([]byte, 0)
+	recordSizeByte := make([]byte, 8)
+	binary.LittleEndian.PutUint64(recordSizeByte, r.GetRecordSize())
+	recordTypeByte := make([]byte, 2)
+	binary.LittleEndian.PutUint16(recordTypeByte, uint16(r.GetRecordType()))
+	logByte := make([]byte, 8)
+	binary.LittleEndian.PutUint64(logByte, r.GetLogNum())
+	tsByte := make([]byte, 8)
+	binary.LittleEndian.PutUint64(tsByte, r.GetTimeStamp())
+	ksByte := make([]byte, 8)
+	binary.LittleEndian.PutUint64(ksByte, r.GetKeySize())
+	vsByte := make([]byte, 8)
+	binary.LittleEndian.PutUint64(vsByte, r.GetValueSize())
+	data = append(data, recordSizeByte...)
+	data = append(data, recordTypeByte...)
+	data = append(data, logByte...)
+	data = append(data, tsByte...)
+	data = append(data, byte(r.GetTombstone()))
+	data = append(data, ksByte...)
+	data = append(data, vsByte...)
+	data = append(data, []byte(r.GetKey())...)
+	data = append(data, r.GetValue()...)
+	r.SetCRCData(blockmanager.CRC32(data))
+	return r
+	// logNum je isti kao kod firstPart; svi delovi dele isti logNum tako da je deterministično.
 }
 
 func (wal *WAL) DeleteSegments(index uint64) {

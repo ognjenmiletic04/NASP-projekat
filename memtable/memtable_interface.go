@@ -6,7 +6,7 @@ import "project/blockmanager"
 // Ove konstante će u budućnosti biti učitane iz konfiguracionog fajla
 const (
 	DEFAULT_NUMBER_OF_TABLES   = 3
-	DEFAULT_CAPACITY_PER_TABLE = 5
+	DEFAULT_CAPACITY_PER_TABLE = 4
 	DEFAULT_SKIP_LIST_HEIGHT   = 3
 	DEFAULT_BTREE_MIN_DEGREE   = 3
 )
@@ -19,8 +19,10 @@ type MemTableInterface interface {
 	// Find pronalazi record po ključu, vraća nil ako ne postoji
 	Find(key string) *blockmanager.Record
 
-	// Flush ispisuje sadržaj memtable-a (za debug/SSTable kreiranje)
-	Flush()
+	// Ispisuje sadzraj memtabl-a (debug)
+	Dump()
+	// Flush dobavlja sadržaj memtable-a (za SSTable kreiranje)
+	Flush() ([]*blockmanager.Record, error)
 
 	// IsFull proverava da li je memtable popunjen i treba flush
 	IsFull() bool

@@ -1,0 +1,8 @@
+{
+  "blockSize": 1024,
+  "poolSize": 512,
+  "memCapacity": 4,
+  "cacheCapacity":5,
+  "summaryStep": 2
+}
+

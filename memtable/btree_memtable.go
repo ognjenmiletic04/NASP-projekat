@@ -3,6 +3,7 @@ package memtable
 import (
 	"fmt"
 	"project/blockmanager"
+	"sort"
 )
 
 // BTreeMemTable implementira memtable koristeći N B-tree tabela
@@ -77,9 +78,7 @@ func (bmt *BTreeMemTable) Find(key string) *blockmanager.Record {
 	return nil
 }
 
-// Nakon dodavanja SS table, Flush ce zapravo biti poziv za praznjenje memtablea kad je pun
-// Flush ispisuje sadržaj svih B-tree tabela
-func (bmt *BTreeMemTable) Flush() {
+func (bmt *BTreeMemTable) Dump() {
 	fmt.Println("=== BTree MemTable ===")
 
 	// Pronađi aktivnu tabelu (prva nepuna)
@@ -118,6 +117,26 @@ func (bmt *BTreeMemTable) Flush() {
 			}
 		}
 	}
+}
+
+// Flush je poziv za praznjenje memtablea kad je pun, rekordi za sstable
+func (bmt *BTreeMemTable) Flush() ([]*blockmanager.Record, error) {
+	var outputs []*blockmanager.Record
+
+	for i := 0; i < bmt.numTables; i++ {
+		if bmt.sizes[i] > 0 {
+			records := bmt.btrees[i].GetAllRecords()
+			outputs = append(outputs, records...)
+		}
+	}
+
+	// sortiranje po kljucu
+	sort.Slice(outputs, func(i, j int) bool {
+		return outputs[i].GetKey() < outputs[j].GetKey()
+	})
+
+	bmt.Clear()
+	return outputs, nil
 }
 
 // IsFull proverava da li su SVE B-tree tabele pune (potreban flush)

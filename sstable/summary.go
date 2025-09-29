@@ -6,17 +6,13 @@ import (
 	"os"
 )
 
-// SummaryEntry – predstavlja sample iz Index fajla
 type SummaryEntry struct {
 	Key         []byte
-	IndexOffset int64 // offset u index fajlu gde ovaj zapis pocinje
+	IndexOffset int64
 }
 
-// Summary – struktura Summary fajla
 type Summary struct {
 	fileName string
-	minKey   []byte
-	maxKey   []byte
 	entries  []SummaryEntry
 }
 
@@ -38,7 +34,7 @@ func (s *Summary) WriteToFile() error {
 	}
 	defer f.Close()
 
-	// upisi minKey i maxKey
+	// helper za upis ključa
 	writeKey := func(key []byte) error {
 		ks := uint64(len(key))
 		ksBytes := make([]byte, 8)
@@ -52,14 +48,7 @@ func (s *Summary) WriteToFile() error {
 		return nil
 	}
 
-	if err := writeKey(s.minKey); err != nil {
-		return err
-	}
-	if err := writeKey(s.maxKey); err != nil {
-		return err
-	}
-
-	// upisi sample-ovane zapise
+	// upiši samo entries
 	for _, e := range s.entries {
 		if err := writeKey(e.Key); err != nil {
 			return err
@@ -75,17 +64,17 @@ func (s *Summary) WriteToFile() error {
 }
 
 // ReadFromFile – deserijalizacija Summary fajla
-func (s *Summary) ReadFromFile() ([]SummaryEntry, error) {
-	f, err := os.Open(s.fileName)
+func ReadFromFile(fileName string) ([]SummaryEntry, error) {
+	f, err := os.Open(fileName)
 	if err != nil {
 		return nil, fmt.Errorf("cannot open summary file: %w", err)
 	}
 	defer f.Close()
 
-	// prvo minKey i maxKey
 	readKey := func() ([]byte, error) {
 		ksBytes := make([]byte, 8)
-		if _, err := f.Read(ksBytes); err != nil {
+		_, err := f.Read(ksBytes)
+		if err != nil {
 			return nil, err
 		}
 		ks := binary.LittleEndian.Uint64(ksBytes)
@@ -96,21 +85,13 @@ func (s *Summary) ReadFromFile() ([]SummaryEntry, error) {
 		return key, nil
 	}
 
-	s.minKey, err = readKey()
-	if err != nil {
-		return nil, err
-	}
-	s.maxKey, err = readKey()
-	if err != nil {
-		return nil, err
-	}
-
 	entries := make([]SummaryEntry, 0)
 	for {
 		key, err := readKey()
 		if err != nil {
 			break // EOF
 		}
+
 		offBytes := make([]byte, 8)
 		if _, err := f.Read(offBytes); err != nil {
 			return nil, err
@@ -123,12 +104,17 @@ func (s *Summary) ReadFromFile() ([]SummaryEntry, error) {
 		})
 	}
 
-	s.entries = entries
 	return entries, nil
 }
+func NewSummary(filename string) *Summary {
+	ent, _ := ReadFromFile(filename)
 
-// BuildSummaryFromIndex kreira Summary iz Index fajla.
-// N je proredjenost summary (npr. 5 znaci svaki 5. Index zapis). -->1.3[DZ1]
+	return &Summary{
+		fileName: filename,
+		entries:  ent,
+	}
+}
+
 func BuildSummaryFromIndex(indexFile string, summaryFile string, N int) (*Summary, error) {
 	f, err := os.Open(indexFile)
 	if err != nil {
@@ -143,7 +129,7 @@ func BuildSummaryFromIndex(indexFile string, summaryFile string, N int) (*Summar
 	var entryCount int = 0
 
 	for {
-		// 1) key size
+		// 1) key size -- ovo make i 8 key je sigurno veci?
 		ksBytes := make([]byte, 8)
 		n, err := f.Read(ksBytes)
 		if err != nil || n == 0 {
@@ -163,15 +149,7 @@ func BuildSummaryFromIndex(indexFile string, summaryFile string, N int) (*Summar
 		}
 		offset += int64(n)
 
-		// 3) dataBlock
-		dbBytes := make([]byte, 4)
-		n, err = f.Read(dbBytes)
-		if err != nil {
-			return nil, fmt.Errorf("corrupted index file")
-		}
-		offset += int64(n)
-
-		// 4) offset
+		// 3) offset (4 bajta)
 		offBytes := make([]byte, 4)
 		n, err = f.Read(offBytes)
 		if err != nil {
@@ -179,18 +157,10 @@ func BuildSummaryFromIndex(indexFile string, summaryFile string, N int) (*Summar
 		}
 		offset += int64(n)
 
-		// prvi key = minKey
-		if entryCount == 0 {
-			summary.minKey = append([]byte(nil), key...)
-		}
-		// uvek zadnji procitan = maxKey
-		summary.maxKey = append([]byte(nil), key...)
-
-		// svaki N-ti zapis dodaj u summary
 		if entryCount%N == 0 {
 			entries = append(entries, SummaryEntry{
 				Key:         append([]byte(nil), key...),
-				IndexOffset: offset - (8 + int64(len(key)) + 4 + 4),
+				IndexOffset: offset - (8 + int64(len(key)) + 4),
 			})
 		}
 
@@ -201,32 +171,27 @@ func BuildSummaryFromIndex(indexFile string, summaryFile string, N int) (*Summar
 	return summary, nil
 }
 
-// FindRange koristi Summary da pronadje raspon offseta u Index fajlu gde moye biti kljuc.
-func (s *Summary) FindRange(target []byte) (int64, int64, bool) {
-	// van granica
-	if string(target) < string(s.minKey) || string(target) > string(s.maxKey) {
-		return 0, 0, false
+func (s *Summary) Find(target []byte) (int64, bool) {
+	if len(s.entries) == 0 {
+		return 0, false
 	}
 
-	// binarna pretraga po sample entries
 	lo, hi := 0, len(s.entries)-1
+	var candidate int64 = -1
+
 	for lo <= hi {
 		mid := (lo + hi) / 2
-		if string(s.entries[mid].Key) <= string(target) {
-			lo = mid + 1
-		} else {
+		if string(s.entries[mid].Key) >= string(target) {
+			candidate = s.entries[mid].IndexOffset
 			hi = mid - 1
+		} else {
+			lo = mid + 1
 		}
 	}
 
-	// hi je indeks poslednjeg sample <= target
-	start := s.entries[hi].IndexOffset
-	var end int64
-	if hi+1 < len(s.entries) {
-		end = s.entries[hi+1].IndexOffset
-	} else {
-		end = -1 // do kraja fajla
+	if candidate == -1 {
+		// target veći od svih → vrati poslednji offset
+		return s.entries[len(s.entries)-1].IndexOffset, true
 	}
-
-	return start, end, true
+	return candidate, true
 }

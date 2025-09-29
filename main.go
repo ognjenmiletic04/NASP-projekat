@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"project/memtable"
+
+	//"project/sstable"
 	"strings"
 )
 
@@ -18,7 +20,7 @@ func main() {
 
 	// Kreiranje Manager-a
 	fmt.Printf("\nKreiranje sistema sa %s memtable...\n", memTableType.String())
-	manager = NewManager(1024, 1024*5, 5, memTableType)
+	manager = NewManager(memTableType)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -152,6 +154,7 @@ func showMemTableContent() {
 	}
 	fmt.Println()
 
-	manager.memtable.Flush()
+	manager.memtable.Dump()
 	fmt.Println("=======================")
+
 }

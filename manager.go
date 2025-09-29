@@ -8,31 +8,79 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"project/blockmanager"
+	"project/cache"
 	"project/memtable"
+	"project/sstable"
 	wal "project/walFile"
 )
+
+type FileManager struct {
+	sstableID int
+}
+
+func NewFileManager() *FileManager {
+	return &FileManager{
+		sstableID: 1,
+	}
+}
+
+func (m *FileManager) nextFileName(base, suffix string) string {
+	return fmt.Sprintf("sstable/%s/usertable-%05d-%s.db", base, m.sstableID, suffix)
+}
 
 type Manager struct {
 	blockManager *blockmanager.BlockManager
 	wal          *wal.WAL
-	memtable     memtable.MemTableInterface // Koristi interface umesto konkretni tip
+	memtable     memtable.MemTableInterface
+	cache        *cache.Cache
+	data         *sstable.Data
+	index        *sstable.Index
+	summary      *sstable.Summary
+	filter       *sstable.BloomFilter
+	mtree        *sstable.MerkleTree
+	mfile        *FileManager
 }
 
-func NewManager(blockSize uint64, poolSize uint64, blockNum uint64, memTableType memtable.MemTableType) *Manager {
-	bufferPool := blockmanager.NewBufferPool()
-	blockManager := blockmanager.NewBlockManager(bufferPool, blockSize, poolSize)
-	wal := wal.NewWal(blockNum, blockManager)
+var conf *Config
 
+func init() {
+	var err error
+	conf, err = LoadConfig("config.json")
+	if err != nil {
+		panic(fmt.Sprintf("greska pri ucitavanju configa: %v", err))
+	}
+}
+
+func NewManager(memTableType memtable.MemTableType) *Manager {
+
+	bufferPool := blockmanager.NewBufferPool()
+	blockManager := blockmanager.NewBlockManager(bufferPool, conf.BlockSize, conf.PoolSize)
+	wal := wal.NewWal(5, blockManager)
+	mf := NewFileManager()
 	// Kreiraj memtable sa izabranim tipom
-	capacity := 5 // default capacity
-	mt := memtable.CreateMemTable(memTableType, capacity)
+	mt := memtable.CreateMemTable(memTableType, conf.MemCapacity)
 	loadFromWAL(mt, wal)
 
+	ch := cache.NewCache(conf.CacheCapacity)
+
+	dt := sstable.NewData(mf.nextFileName("DATA", "Data"), conf.BlockSize, conf.PoolSize)
+	idx := sstable.NewIndex(mf.nextFileName("INDEX", "Index"), nil) // za početak prazan
+	expectedElements := conf.MemCapacity * memtable.DEFAULT_NUMBER_OF_TABLES
+	bf := sstable.NewBloomFilter(expectedElements, 0.01)
+	s := sstable.NewSummary(mf.nextFileName("SUMMARY", "Summary"))
 	return &Manager{
 		blockManager: blockManager,
 		wal:          wal,
 		memtable:     mt,
+		cache:        ch,
+		data:         dt,
+		index:        idx,
+		summary:      s,
+		filter:       bf,
+		mtree:        nil,
+		mfile:        mf,
 	}
 }
 
@@ -48,11 +96,10 @@ func loadFromWAL(mt memtable.MemTableInterface, wal *wal.WAL) {
 
 	totalRecords := 0
 	for {
-		record := wal.NextRecord(wal.GetBlockManager())
+		record, hasNext := wal.NextRecord(wal.GetBlockManager())
 		if record == nil {
 			break // Nema više zapisa
 		}
-
 		totalRecords++
 		key := record.GetKey()
 
@@ -60,6 +107,9 @@ func loadFromWAL(mt memtable.MemTableInterface, wal *wal.WAL) {
 		existingRecord, exists := keyMap[key]
 		if !exists || record.GetTimeStamp() > existingRecord.GetTimeStamp() {
 			keyMap[key] = record
+		}
+		if !hasNext {
+			break // Nema više zapisa
 		}
 	}
 
@@ -83,11 +133,62 @@ func (manager *Manager) PUT(key string, value []byte) error {
 
 	// Nakon uspešnog WAL zapisa: Dodaj u memtable
 	manager.memtable.PutRecord(record)
+	manager.filter.Add([]byte(key))
+
+	// Ako je memtable pun → flush u Data fajl
+	if manager.memtable.IsFull() {
+		records, err := manager.memtable.Flush()
+		if err == nil && len(records) > 0 {
+			indexEntries, err := manager.data.WriteDataFile(records)
+			if err != nil {
+				return fmt.Errorf("failed to flush memtable to SSTable: %v", err)
+			}
+
+			manager.index.SetIndexEntries(indexEntries)
+			if err := manager.index.WriteToFile(); err != nil {
+				return fmt.Errorf("\nfailed to write index: %v", err)
+			}
+
+			// ovde napraviti i summary
+
+			smr, err := sstable.BuildSummaryFromIndex(
+				manager.index.GetFileName(),   // uzmi index fajl koji si upravo napravio
+				manager.summary.GetFileName(), // gde da snimi summary
+				conf.SummaryStep,              // N = svaki 5. entry ide u summary (podesi po želji)
+			)
+			if err != nil {
+				return fmt.Errorf("failed to build summary: %v", err)
+			}
+			manager.summary = smr
+			if err := manager.summary.WriteToFile(); err != nil {
+				return fmt.Errorf("failed to write summary: %v", err)
+			}
+
+			//upis bloomfiltera
+			bfFile, err := os.Create(manager.mfile.nextFileName("FILTER", "Filter"))
+			if err != nil {
+				return fmt.Errorf("failed to create bloom filter file: %v", err)
+			}
+			defer bfFile.Close()
+
+			_, err = bfFile.Write(manager.filter.WriteBloomFilterFile())
+			if err != nil {
+				return fmt.Errorf("failed to write bloom filter: %v", err)
+			}
+
+			manager.mtree = sstable.CreateMerkleTree(manager.data.GetDataBlocks(memtable.DEFAULT_NUMBER_OF_TABLES, manager.data.GetFileName()))
+			manager.mtree.Serialize(manager.mfile.nextFileName("METADATA", "Metadata"))
+
+			fmt.Println("MemTable flushed to SSTable")
+		}
+	}
+	manager.mfile.sstableID += 1
 
 	manager.blockManager.EmptyBufferPool() //samo za testiranje inace se prazni sam kad se popuni
 	fmt.Println("Data written successfully")
 	return nil
 }
+
 func (manager *Manager) GET(key string) []byte {
 	fmt.Printf("Searching for key: %s\n", key)
 
@@ -99,40 +200,66 @@ func (manager *Manager) GET(key string) []byte {
 			return nil
 		}
 		fmt.Printf("Found in memtable: %s = %s\n", key, string(record.GetValue()))
+		manager.cache.Put(record)
 		return record.GetValue()
 	}
 
-	// Drugo: Fallback na WAL pretragu (sporije)
-	fmt.Println("Not found in memtable, searching in WAL...")
-	manager.wal.ResetCounter()
-
-	var latestRecord *blockmanager.Record
-
-	// Pronađi poslednju verziju ključa u WAL-u
-	for {
-		record := manager.wal.NextRecord(manager.blockManager)
-		if record == nil {
-			break
+	// Drugo: Trazi u cache
+	record, ok := manager.cache.Get(key)
+	if ok {
+		if record.GetTombstone() == 1 {
+			fmt.Printf("Key '%s' is deleted (tombstone found in cache)\n", key)
+			return nil
 		}
-		if record.GetKey() == key {
-			if latestRecord == nil || record.GetTimeStamp() > latestRecord.GetTimeStamp() {
-				latestRecord = record
+		fmt.Printf("Found in cache: %s = %s\n", key, string(record.GetValue()))
+		return record.GetValue()
+	}
+
+	//Trece: Trazi u BloomFilter
+	file, _ := os.Open(manager.mfile.nextFileName("FILTER", "Filter"))
+	manager.filter.ReadBloomFilterFile(file)
+	if manager.filter.Contains([]byte(key)) {
+		//Ako je mozda u BF, idemo dalje
+
+		cand, _ := manager.summary.Find([]byte(key))
+
+		if cand == -1 {
+			// Nije u summary → ne postoji
+			return nil
+		} else {
+			//Mozda ga ima u summary udji u indeks
+			_, err := manager.index.ReadFromFile()
+			if err != nil {
+				fmt.Printf("Greska pri citanju summary fajla: %v\n", err)
+				return nil
+			} else {
+				//Trazi u index
+				indexCandidateOffset, _ := manager.index.SearchIndex([]byte(key))
+				if indexCandidateOffset == uint32(0xFFFFFFFF) {
+					return nil
+				} else {
+					//ako ga mozda ima u index, trazi u data block iz sstable data
+					record, _, err := manager.data.FindInBlock(indexCandidateOffset, []byte(key))
+					if err != nil {
+						fmt.Printf("Greska pri citanju summary fajla: %v\n", err)
+						return nil
+					} else {
+						if record == nil {
+							return nil
+						} else {
+							manager.cache.Put(record)
+							fmt.Printf("Found in sstable")
+							return record.GetValue()
+						}
+					}
+				}
 			}
 		}
-	}
 
-	if latestRecord == nil {
-		fmt.Printf("Key '%s' not found\n", key)
+	} else {
 		return nil
 	}
 
-	if latestRecord.GetTombstone() == 1 {
-		fmt.Printf("Key '%s' is deleted (tombstone found in WAL)\n", key)
-		return nil
-	}
-
-	fmt.Printf("Found in WAL: %s = %s\n", key, string(latestRecord.GetValue()))
-	return latestRecord.GetValue()
 }
 
 func (manager *Manager) DELETE(key string) error {
