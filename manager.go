@@ -56,7 +56,7 @@ func init() {
 func NewManager(memTableType memtable.MemTableType) *Manager {
 
 	bufferPool := blockmanager.NewBufferPool()
-	blockManager := blockmanager.NewBlockManager(bufferPool, conf.BlockSize, conf.PoolSize)
+	blockManager := blockmanager.NewBlockManager(bufferPool, conf.BlockSize, conf.BlockSize*5)
 	wal := wal.NewWal(5, blockManager)
 	mf := NewFileManager()
 	// Kreiraj memtable sa izabranim tipom
@@ -65,7 +65,7 @@ func NewManager(memTableType memtable.MemTableType) *Manager {
 
 	ch := cache.NewCache(conf.CacheCapacity)
 
-	dt := sstable.NewData(mf.nextFileName("DATA", "Data"), conf.BlockSize, conf.PoolSize)
+	dt := sstable.NewData(mf.nextFileName("DATA", "Data"), conf.BlockSize, conf.BlockSize*5)
 	idx := sstable.NewIndex(mf.nextFileName("INDEX", "Index"), nil) // za početak prazan
 	expectedElements := conf.MemCapacity * memtable.DEFAULT_NUMBER_OF_TABLES
 	bf := sstable.NewBloomFilter(expectedElements, 0.01)
