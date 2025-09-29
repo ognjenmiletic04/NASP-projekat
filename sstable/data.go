@@ -8,9 +8,8 @@ import (
 
 // IndexEntry predstavlja sparse index entry (prvi key u data bloku)
 type IndexEntry struct {
-	Key       []byte
-	DataBlock uint32 // broj bloka u data fajlu (blok 0 = header)
-	Offset    uint32 // offset unutar bloka (ovde koristimo 0 za pocetak bloka)
+	Key    []byte
+	Offset uint32 // offset unutar bloka (ovde koristimo 0 za pocetak bloka)
 }
 
 // Data predstavlja glavni segment SSTable fajla
@@ -97,18 +96,14 @@ func (d *Data) WriteDataFile(records []*blockmanager.Record) (indexEntries []Ind
 			curRecords = append(curRecords, rec)
 			curBlockBytes += rSize
 			continue
-		}
+		} //indexEntries = append(indexEntries, IndexEntry{Key: firstKeyInBlock, Offset: currentBlockNum})?
 
 		// 2. Ako staje u prazan blok (zatvori trenutni i otvori novi)
 		if rSize <= d.blockSize {
 			if len(curRecords) > 0 {
 				// upiši trenutni blok
 				d.blockManager.WriteBlock(curRecords, d.fileName, uint64(currentBlockNum))
-				indexEntries = append(indexEntries, IndexEntry{
-					Key:       append([]byte(nil), firstKeyInBlock...),
-					DataBlock: currentBlockNum,
-					Offset:    0,
-				})
+				indexEntries = append(indexEntries, IndexEntry{Key: firstKeyInBlock, Offset: currentBlockNum})
 				currentBlockNum++
 			}
 
@@ -132,11 +127,7 @@ func (d *Data) WriteDataFile(records []*blockmanager.Record) (indexEntries []Ind
 			if curBlockBytes+partSize > d.blockSize {
 				// zatvori trenutni blok
 				d.blockManager.WriteBlock(curRecords, d.fileName, uint64(currentBlockNum))
-				indexEntries = append(indexEntries, IndexEntry{
-					Key:       append([]byte(nil), firstKeyInBlock...),
-					DataBlock: currentBlockNum,
-					Offset:    0,
-				})
+				indexEntries = append(indexEntries, IndexEntry{Key: firstKeyInBlock, Offset: currentBlockNum})
 				currentBlockNum++
 				curRecords = curRecords[:0]
 				curBlockBytes = 0
@@ -154,11 +145,7 @@ func (d *Data) WriteDataFile(records []*blockmanager.Record) (indexEntries []Ind
 	// upiši poslednji data blok
 	if len(curRecords) > 0 {
 		d.blockManager.WriteBlock(curRecords, d.fileName, uint64(currentBlockNum))
-		indexEntries = append(indexEntries, IndexEntry{
-			Key:       append([]byte(nil), firstKeyInBlock...),
-			DataBlock: currentBlockNum,
-			Offset:    0,
-		})
+		indexEntries = append(indexEntries, IndexEntry{Key: firstKeyInBlock, Offset: currentBlockNum})
 		currentBlockNum++
 	}
 
@@ -210,4 +197,12 @@ func (d *Data) FindInBlock(blockNum uint32, target []byte) (*blockmanager.Record
 		}
 	}
 	return nil, false, nil
+}
+
+func (d *Data) GetDataBlocks(numberOfBlocks uint64, filename string) []*blockmanager.Block {
+	blocks := make([]*blockmanager.Block, 0)
+	for i := 1; i < int(numberOfBlocks); i++ {
+		blocks = append(blocks, d.blockManager.ReadBlock(filename, uint64(i)))
+	}
+	return blocks
 }

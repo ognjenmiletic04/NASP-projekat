@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"project/blockmanager"
+	"project/cache"
 	"project/memtable"
 	"project/sstable"
 	wal "project/walFile"
@@ -19,36 +20,53 @@ type Manager struct {
 	blockManager *blockmanager.BlockManager
 	wal          *wal.WAL
 	memtable     memtable.MemTableInterface // Koristi interface umesto konkretni tip
-	data         *sstable.Data              // dodaj referencu na Data
+	cache        *cache.Cache
+	data         *sstable.Data // dodaj referencu na Data
 	index        *sstable.Index
 	summary      *sstable.Summary
 	filter       *sstable.BloomFilter
-	//merkle tree
+	mtree        *sstable.MerkleTree
+}
+
+var conf *Config
+
+func init() {
+	var err error
+	conf, err = LoadConfig("config.json")
+	if err != nil {
+		panic(fmt.Sprintf("greska pri ucitavanju configa: %v", err))
+	}
 }
 
 //funckija za imena file da ne ide sve uvek u 1.
 
-func NewManager(blockSize uint64, poolSize uint64, blockNum uint64, memTableType memtable.MemTableType) *Manager {
+func NewManager(memTableType memtable.MemTableType) *Manager {
+
 	bufferPool := blockmanager.NewBufferPool()
-	blockManager := blockmanager.NewBlockManager(bufferPool, blockSize, poolSize)
-	wal := wal.NewWal(blockNum, blockManager)
+	blockManager := blockmanager.NewBlockManager(bufferPool, conf.BlockSize, conf.PoolSize)
+	wal := wal.NewWal(conf.BlockNum, blockManager)
 
 	// Kreiraj memtable sa izabranim tipom
-	capacity := 5 // default capacity
-	mt := memtable.CreateMemTable(memTableType, capacity)
+	mt := memtable.CreateMemTable(memTableType, conf.MemCapacity)
 	loadFromWAL(mt, wal)
 
-	dt := sstable.NewData("sstable/DATA/usertable-00001-Data.db", blockSize, poolSize)
+	ch := cache.NewCache(conf.CacheCapacity)
+
+	dt := sstable.NewData("sstable/DATA/usertable-00001-Data.db", conf.BlockSize, conf.PoolSize)
 	idx := sstable.NewIndex("sstable/INDEX/usertable-00001-Index.db", nil) // za početak prazan
-	bf := sstable.NewBloomFilter(15, 0.01)
+	expectedElements := memtable.DEFAULT_CAPACITY_PER_TABLE * memtable.DEFAULT_NUMBER_OF_TABLES
+	bf := sstable.NewBloomFilter(expectedElements, 0.01)
+	s := sstable.NewSummary("sstable/SUMMARY/usertable-00001-Summary.db")
 	return &Manager{
 		blockManager: blockManager,
 		wal:          wal,
 		memtable:     mt,
+		cache:        ch,
 		data:         dt,
 		index:        idx,
-		summary:      nil,
+		summary:      s,
 		filter:       bf,
+		mtree:        nil,
 	}
 }
 
@@ -121,7 +139,7 @@ func (manager *Manager) PUT(key string, value []byte) error {
 			smr, err := sstable.BuildSummaryFromIndex(
 				manager.index.GetFileName(), // uzmi index fajl koji si upravo napravio
 				summaryFile,                 // gde da snimi summary
-				3,                           // N = svaki 5. entry ide u summary (podesi po želji)
+				conf.SummaryStep,            // N = svaki 5. entry ide u summary (podesi po želji)
 			)
 			if err != nil {
 				return fmt.Errorf("failed to build summary: %v", err)
@@ -143,6 +161,9 @@ func (manager *Manager) PUT(key string, value []byte) error {
 				return fmt.Errorf("failed to write bloom filter: %v", err)
 			}
 
+			manager.mtree = sstable.CreateMerkleTree(manager.data.GetDataBlocks(memtable.DEFAULT_NUMBER_OF_TABLES, manager.data.GetFileName()))
+			manager.mtree.Serialize("sstable/METADATA/usertable-00001-Metadata.db")
+
 			fmt.Println("MemTable flushed to SSTable")
 		}
 	}
@@ -163,43 +184,74 @@ func (manager *Manager) GET(key string) []byte {
 			return nil
 		}
 		fmt.Printf("Found in memtable: %s = %s\n", key, string(record.GetValue()))
+		manager.cache.Put(record)
 		return record.GetValue()
 	}
 
-	// Drugo: Fallback na WAL pretragu (sporije)
-	fmt.Println("Not found in memtable, searching in WAL...")
-	manager.wal.ResetCounter()
-
-	var latestRecord *blockmanager.Record
-
-	// Pronađi poslednju verziju ključa u WAL-u
-	for {
-		record, hasNext := manager.wal.NextRecord(manager.blockManager)
-		if record == nil {
-			break
+	// Drugo: Trazi u cache
+	record, ok := manager.cache.Get(key)
+	if ok {
+		if record.GetTombstone() == 1 {
+			fmt.Printf("Key '%s' is deleted (tombstone found in cache)\n", key)
+			return nil
 		}
-		if record.GetKey() == key {
-			if latestRecord == nil || record.GetTimeStamp() > latestRecord.GetTimeStamp() {
-				latestRecord = record
+		fmt.Printf("Found in cache: %s = %s\n", key, string(record.GetValue()))
+		return record.GetValue()
+	}
+
+	//Trece: Trazi u BloomFilter
+	file, _ := os.Open("sstable/FILTER/usertable-00001-Filter.db")
+	manager.filter.ReadBloomFilterFile(file)
+	if manager.filter.Contains([]byte(key)) {
+		//Ako je mozda u BF, idemo dalje
+
+		// Četvrto - summary sstabla-a
+		/*entries, err := sstable.ReadFromFile("sstable/SUMMARY/usertable-00001-Summary.db")
+		if err != nil {
+			fmt.Printf("Greska pri citanju summary fajla: %v\n", err)
+			return nil
+		}*/
+
+		_, found := manager.summary.Find([]byte(key))
+		if !found {
+			// Nije u summary → ne postoji
+			return nil
+		} else {
+			//Mozda ga ima u summary udji u indeks
+			_, err := manager.index.ReadFromFile()
+			if err != nil {
+				fmt.Printf("Greska pri citanju summary fajla: %v\n", err)
+				return nil
+			} else {
+				//Trazi u index
+
+				indexCandidateOffset, found1 := manager.index.SearchIndex([]byte(key))
+				if !found1 {
+					return nil
+				} else {
+					//ako ga mozda ima u index, trazi u data block iz sstable data
+					record, found2, err := manager.data.FindInBlock(indexCandidateOffset, []byte(key))
+					if err != nil {
+						fmt.Printf("Greska pri citanju summary fajla: %v\n", err)
+						return nil
+					} else {
+						if !found2 {
+							return nil
+						} else {
+							manager.cache.Put(record)
+							fmt.Printf("Found in sstable")
+							return record.GetValue()
+						}
+					}
+				}
 			}
 		}
-		if !hasNext {
-			break
-		}
-	}
 
-	if latestRecord == nil {
-		fmt.Printf("Key '%s' not found\n", key)
+	} else {
+		//Sigurno se ne nalazi u BloomFilteru
 		return nil
 	}
 
-	if latestRecord.GetTombstone() == 1 {
-		fmt.Printf("Key '%s' is deleted (tombstone found in WAL)\n", key)
-		return nil
-	}
-
-	fmt.Printf("Found in WAL: %s = %s\n", key, string(latestRecord.GetValue()))
-	return latestRecord.GetValue()
 }
 
 func (manager *Manager) DELETE(key string) error {

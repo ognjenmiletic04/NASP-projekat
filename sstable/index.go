@@ -40,7 +40,7 @@ func (idx *Index) SetIndexEntries(entries []IndexEntry) {
 	idx.indexEntries = entries
 }
 
-// WriteToFile snima index entries u fajl (blok po blok).
+// WriteToFile snima index entries u fajl.
 func (idx *Index) WriteToFile() error {
 	if idx.fileName == "" {
 		return fmt.Errorf("index file name is not set")
@@ -49,14 +49,12 @@ func (idx *Index) WriteToFile() error {
 		return fmt.Errorf("no index entries to write")
 	}
 
-	// otvori fajl
 	f, err := os.OpenFile(idx.fileName, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("cannot open index file: %w", err)
 	}
 	defer f.Close()
 
-	// upisi svaki zapis
 	for _, entry := range idx.indexEntries {
 		// 1) key size
 		ks := uint64(len(entry.Key))
@@ -71,14 +69,7 @@ func (idx *Index) WriteToFile() error {
 			return err
 		}
 
-		// 3) dataBlock
-		dbBytes := make([]byte, 4)
-		binary.LittleEndian.PutUint32(dbBytes, entry.DataBlock)
-		if _, err := f.Write(dbBytes); err != nil {
-			return err
-		}
-
-		// 4) offset
+		// 3) offset (blok broj)
 		offBytes := make([]byte, 4)
 		binary.LittleEndian.PutUint32(offBytes, entry.Offset)
 		if _, err := f.Write(offBytes); err != nil {
@@ -89,7 +80,7 @@ func (idx *Index) WriteToFile() error {
 	return nil
 }
 
-// ReadFromFile ucitava sve IndexEntry iz fajla.
+// ReadFromFile učitava sve IndexEntry iz fajla.
 func (idx *Index) ReadFromFile() ([]IndexEntry, error) {
 	f, err := os.Open(idx.fileName)
 	if err != nil {
@@ -114,14 +105,7 @@ func (idx *Index) ReadFromFile() ([]IndexEntry, error) {
 			return nil, err
 		}
 
-		// 3) dataBlock
-		dbBytes := make([]byte, 4)
-		if _, err := f.Read(dbBytes); err != nil {
-			return nil, err
-		}
-		dataBlock := binary.LittleEndian.Uint32(dbBytes)
-
-		// 4) offset
+		// 3) offset (blok broj)
 		offBytes := make([]byte, 4)
 		if _, err := f.Read(offBytes); err != nil {
 			return nil, err
@@ -129,32 +113,47 @@ func (idx *Index) ReadFromFile() ([]IndexEntry, error) {
 		offset := binary.LittleEndian.Uint32(offBytes)
 
 		entries = append(entries, IndexEntry{
-			Key:       key,
-			DataBlock: dataBlock,
-			Offset:    offset,
+			Key:    key,
+			Offset: offset,
 		})
 	}
-
+	idx.indexEntries = entries
 	return entries, nil
 }
 
-// BinarySearch pretrayuje entry-e po kljucu.
-func (idx *Index) SearchIndex(entries []IndexEntry, key []byte) *IndexEntry {
-	low, high := 0, len(entries)-1
-	for low <= high {
-		mid := (low + high) / 2
-		cmp := string(entries[mid].Key)
-		if cmp == string(key) {
-			return &entries[mid]
-		} else if cmp < string(key) {
-			low = mid + 1
+// SearchIndex – binarna pretraga kroz indexEntries.
+// Vraća candidate offset (broj bloka) i bool found.
+func (idx *Index) SearchIndex(target []byte) (uint32, bool) {
+	if len(idx.indexEntries) == 0 {
+		return 0, false
+	}
+
+	lo, hi := 0, len(idx.indexEntries)-1
+	var candidate uint32 = 0
+	found := false
+
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		cmp := string(idx.indexEntries[mid].Key)
+
+		if cmp == string(target) {
+			// tačan pogodak
+			return idx.indexEntries[mid].Offset, true
+		} else if cmp > string(target) {
+			candidate = idx.indexEntries[mid].Offset
+			hi = mid - 1
 		} else {
-			high = mid - 1
+			lo = mid + 1
 		}
 	}
-	// ako nije tacan pogodak, vracamo "najblizi manji"
-	if high >= 0 {
-		return &entries[high]
+
+	// ako nismo pogodili, candidate će biti offset prvog ključa > target
+	// ako je target veći od svih, uzimamo poslednji offset
+	if !found {
+		if candidate == 0 {
+			candidate = idx.indexEntries[len(idx.indexEntries)-1].Offset
+		}
 	}
-	return nil
+
+	return candidate, false
 }

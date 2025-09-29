@@ -20,7 +20,7 @@ func main() {
 
 	// Kreiranje Manager-a
 	fmt.Printf("\nKreiranje sistema sa %s memtable...\n", memTableType.String())
-	manager = NewManager(124, 124*5, 1, memTableType)
+	manager = NewManager(memTableType)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
